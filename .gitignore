@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+test-kokoro.mjs
+test-output.wav
 
 # Editor directories and files
 .vscode/*
