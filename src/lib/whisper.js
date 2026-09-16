@@ -4,15 +4,15 @@ const readyPromise = new Promise((res) => { readyResolve = res })
 const pending = new Map()
 let reqId = 0
 
-export function loadKokoro() {
+export function loadWhisper() {
   if (!worker) {
-    worker = new Worker(new URL('../workers/kokoro.worker.js', import.meta.url), { type: 'module' })
+    worker = new Worker(new URL('../workers/whisper.worker.js', import.meta.url), { type: 'module' })
     worker.onmessage = (e) => {
-      if (e.data.type === 'ready') readyResolve(e.data.voices)
+      if (e.data.type === 'ready') readyResolve()
       if (e.data.type === 'result') {
         const resolve = pending.get(e.data.id)
         if (resolve) {
-          resolve({ audio: e.data.audio, sampling_rate: e.data.sampling_rate })
+          resolve(e.data.text)
           pending.delete(e.data.id)
         }
       }
@@ -22,10 +22,10 @@ export function loadKokoro() {
   return readyPromise
 }
 
-export function generateSpeech(text, voice = 'af_bella') {
+export function transcribe(audioFloat32) {
   const id = reqId++
   return new Promise((resolve) => {
     pending.set(id, resolve)
-    worker.postMessage({ type: 'generate', text, voice, id })
+    worker.postMessage({ type: 'transcribe', audio: audioFloat32, id }, [audioFloat32.buffer])
   })
 }

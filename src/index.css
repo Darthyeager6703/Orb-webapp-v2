@@ -3,4 +3,38 @@ html, body, #root {
   padding: 0;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+
+}
+
+.conversation-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(201, 162, 75, 0.4) transparent;
+}
+.conversation-panel::-webkit-scrollbar {
+  width: 6px;
+}
+.conversation-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.conversation-panel::-webkit-scrollbar-thumb {
+  background: rgba(201, 162, 75, 0.4);
+  border-radius: 999px;
+}
+.conversation-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(232, 206, 140, 0.6);
+}
+
+
+@keyframes grain-shift {
+  0%   { transform: translate(0, 0); }
+  25%  { transform: translate(-2%, 2%); }
+  50%  { transform: translate(2%, -1%); }
+  75%  { transform: translate(-1%, -2%); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
 }

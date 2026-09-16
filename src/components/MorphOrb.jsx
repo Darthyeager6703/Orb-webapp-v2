@@ -71,31 +71,49 @@ const vertexShader = `
 const fragmentShader = `
   varying float vFlow;
   varying vec3 vPos;
+
   void main() {
-  vec3 faceNormal = normalize(cross(dFdx(vPos), dFdy(vPos)));
-  vec3 viewDir = normalize(-vPos);
+    vec3 faceNormal = normalize(cross(dFdx(vPos), dFdy(vPos)));
+    vec3 viewDir = normalize(-vPos);
 
-  vec3 keyLight = normalize(vec3(0.6, 0.8, 0.5));
-  vec3 fillLight = normalize(vec3(-0.5, -0.3, 0.6));
+    vec3 keyLight = normalize(vec3(0.6, 0.8, 0.5));
+    vec3 fillLight = normalize(vec3(-0.5, -0.3, 0.6));
 
-  float keyDiffuse = dot(faceNormal, keyLight) * 0.5 + 0.5;   // half-lambert wrap
-  float fillDiffuse = dot(faceNormal, fillLight) * 0.5 + 0.5;
-  float diffuse = keyDiffuse * 0.75 + fillDiffuse * 0.25;
+    float keyDiffuse = dot(faceNormal, keyLight) * 0.5 + 0.5;
+    float fillDiffuse = dot(faceNormal, fillLight) * 0.5 + 0.5;
+    float diffuse = keyDiffuse * 0.75 + fillDiffuse * 0.25;
 
-  vec3 halfDir = normalize(keyLight + viewDir);
-  float spec = pow(max(dot(faceNormal, halfDir), 0.0), 24.0);
+    vec3 halfDir = normalize(keyLight + viewDir);
+    float spec = pow(max(dot(faceNormal, halfDir), 0.0), 24.0);
 
-  float swirl = smoothstep(-0.5, 0.8, vFlow);
-  vec3 darkGold = vec3(0.10, 0.065, 0.02);
-  vec3 midGold  = vec3(0.60, 0.40, 0.11);
-  vec3 richGold = vec3(0.85, 0.58, 0.17);
-  vec3 base = mix(darkGold, midGold, swirl);
-  base = mix(base, richGold, swirl * 0.4);
+    // curvature-based self-occlusion — darkens tight folds in the flow field, free (reuses derivatives)
+    float curvature = abs(dFdx(vFlow)) + abs(dFdy(vFlow));
+    float ao = 1.0 - smoothstep(0.0, 0.35, curvature) * 0.65;
 
-  vec3 lit = base * (0.65 + diffuse * 0.4);   
-  lit += vec3(0.9, 0.7, 0.35) * spec * 0.6;
-  gl_FragColor = vec4(clamp(lit, 0.0, 0.95), 1.0);
-}
+    // fresnel — liquid metal reflects hardest at grazing angles, sees through at direct angles
+    float fresnel = pow(1.0 - max(dot(faceNormal, viewDir), 0.0), 3.0);
+
+    // fake environment: dark above, warm gold glow toward the key light side
+    vec3 reflectDir = reflect(-viewDir, faceNormal);
+    float envMix = reflectDir.y * 0.5 + 0.5;
+    vec3 envDark = vec3(0.02, 0.015, 0.01);
+    vec3 envWarm = vec3(0.95, 0.72, 0.32);
+    float lightSide = max(dot(reflectDir, keyLight), 0.0);
+    vec3 envColor = mix(envDark, envWarm, envMix * lightSide);
+
+    float swirl = smoothstep(-0.5, 0.8, vFlow);
+    vec3 darkGold = vec3(0.10, 0.065, 0.02);
+    vec3 midGold  = vec3(0.60, 0.40, 0.11);
+    vec3 richGold = vec3(0.85, 0.58, 0.17);
+    vec3 base = mix(darkGold, midGold, swirl);
+    base = mix(base, richGold, swirl * 0.4);
+
+    vec3 lit = base * (0.65 + diffuse * 0.4) * ao;
+    lit += vec3(1, 0.92, 0.7) * spec * 0.9;
+    lit = mix(lit, envColor, fresnel * 0.55);
+
+    gl_FragColor = vec4(clamp(lit, 0.0, 0.95), 1.0);
+  }
 `
 
 function makeMat() {
@@ -114,8 +132,8 @@ export default function MorphOrb({ deform = 0, split = 0, mode = 'listening', ra
   const thinkBlend = useRef(0)
 
   const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent)
-  const bigGeo = useMemo(() => new THREE.IcosahedronGeometry(radius, isMobile ? 16 : 32), [radius])
-  const dropGeo = useMemo(() => new THREE.IcosahedronGeometry(radius * 0.28, isMobile ? 10 : 16), [radius])
+  const bigGeo = useMemo(() => new THREE.IcosahedronGeometry(radius, isMobile ? 5 : 7), [radius])
+  const dropGeo = useMemo(() => new THREE.IcosahedronGeometry(radius * 0.28, isMobile ? 3 : 5), [radius])
 
   const bigMat = useMemo(() => makeMat(), [])
   const dropMats = useMemo(() => [makeMat(), makeMat(), makeMat(), makeMat()], [])
