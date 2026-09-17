@@ -125,6 +125,7 @@ function makeMat() {
 }
 
 export default function MorphOrb({ deform = 0, split = 0, mode = 'listening', radius = 0.6 }) {
+  const introRef = useRef(0)
   const bigRef = useRef()
   const bigMatRef = useRef()
   const dropRefs = [useRef(), useRef(), useRef(), useRef()]
@@ -138,8 +139,11 @@ export default function MorphOrb({ deform = 0, split = 0, mode = 'listening', ra
   const bigMat = useMemo(() => makeMat(), [])
   const dropMats = useMemo(() => [makeMat(), makeMat(), makeMat(), makeMat()], [])
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
   const t = state.clock.elapsedTime
+
+  introRef.current = Math.min(introRef.current + delta / 1.4, 1) // delta from useFrame's second arg
+  
 
   if (bigMatRef.current) {
     bigMatRef.current.uniforms.uTime.value = t
@@ -151,10 +155,11 @@ export default function MorphOrb({ deform = 0, split = 0, mode = 'listening', ra
 
   const bigScale = THREE.MathUtils.lerp(bigRef.current?.scale.x ?? 1, 1 - split, 0.06)
   if (bigRef.current) {
-    bigRef.current.scale.setScalar(bigScale)
-    bigRef.current.visible = bigScale > 0.01
-    bigRef.current.rotation.y += 0.0008
-  }
+  const introScale = THREE.MathUtils.smoothstep ? THREE.MathUtils.smoothstep(introRef.current, 0, 1) : introRef.current
+  bigRef.current.scale.setScalar(bigScale * introScale)
+  bigRef.current.visible = bigScale > 0.01
+  bigRef.current.rotation.y += 0.0008
+}
 
   const targetThink = mode === 'thinking' ? 1 : 0
   thinkBlend.current = THREE.MathUtils.lerp(thinkBlend.current, targetThink, 0.05)

@@ -12,7 +12,7 @@ export default function ConversationPanel({ messages }) {
 
   return (
     <div
-     className='conversational-panel'
+      className='conversational-panel'
       style={{
         position: 'fixed',
         top: 0,
@@ -46,6 +46,20 @@ export default function ConversationPanel({ messages }) {
           }}
         >
           {m.role === 'user' ? m.text : <ResponseText text={m.text} />}
+
+          {m.role === 'assistant' && m.usage && (
+            <div
+              style={{
+                fontSize: 10,
+                color: '#8A8A8E',
+                marginTop: 6,
+                letterSpacing: '0.03em',
+                fontFamily: "'Inter', sans-serif",
+              }}
+            >
+              Sent: {m.usage.prompt_tokens} · Received: {m.usage.completion_tokens} · Total: {m.usage.total_tokens}
+            </div>
+          )}
         </div>
       ))}
       <div ref={endRef} />

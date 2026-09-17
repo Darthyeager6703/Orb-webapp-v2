@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Canvas } from '@react-three/fiber'
 import MorphOrb from './components/MorphOrb'
-import VoicePicker from './components/VoicePicker'
+import LeftPanel from './components/LeftPanel'
 import OrbButton from './components/OrbButton'
 import ConversationPanel from './components/ConversationPanel'
 import { askGroq } from './lib/groq'
@@ -10,7 +10,10 @@ import { loadWhisper, transcribe } from './lib/whisper'
 import { blobToWhisperInput } from './lib/audio'
 import { stripMarkdownForSpeech } from './lib/text'
 import CameraRig from './components/CameraRig'
-
+import SettingsOverlay from './components/SettingsOverlay'
+import Footer from './components/Footer'
+import { canSendRequest, recordUsage, getUsageSummary } from './lib/usage'
+import { setRates, getRates, addUsage, getCostBreakdown } from './lib/costTracker'
 
 
 export default function App() {
@@ -22,6 +25,18 @@ export default function App() {
   const [sttReady, setSttReady] = useState(false)
   const [messages, setMessages] = useState([])
 
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [provider, setProvider] = useState('groq')
+  const [apiKeys, setApiKeys] = useState({})
+  const [useLocalModel, setUseLocalModel] = useState(false)
+
+  const [apiKeyMode, setApiKeyMode] = useState('default')
+  const [customApiKey, setCustomApiKey] = useState('')
+
+  const [usage, setUsage] = useState(getUsageSummary())
+  const [rates, setRatesState] = useState(getRates())
+  const [totalCost, setTotalCost] = useState(0)
+
   const audioCtxRef = useRef(null)
   const analyserRef = useRef(null)
   const rafRef = useRef(null)
@@ -32,7 +47,6 @@ export default function App() {
   const sourceRef = useRef(null)
   const abortRef = useRef(null)
   const cancelledRef = useRef(false)
-
 
   useEffect(() => {
     loadKokoro().then((v) => { if (v?.length) setVoices(v); setModelReady(true) })
@@ -58,11 +72,11 @@ export default function App() {
     rafRef.current = requestAnimationFrame(trackAmplitude)
   }
 
- const speak = async (displayText, spokenText = displayText) => {
+  const speak = async (displayText, spokenText = displayText, reqUsage = null) => {
   if (!modelReady) return
   const ctx = getAudioCtx()
   const result = await generateSpeech(spokenText, voice)
-  if (cancelledRef.current) return // <- bail if interrupted while Kokoro was generating
+  if (cancelledRef.current) return
 
   const buffer = ctx.createBuffer(1, result.audio.length, result.sampling_rate)
   buffer.copyToChannel(result.audio, 0)
@@ -71,7 +85,7 @@ export default function App() {
   src.connect(analyserRef.current)
   sourceRef.current = src
 
-  setMessages((m) => [...m, { role: 'assistant', text: displayText }])
+  setMessages((m) => [...m, { role: 'assistant', text: displayText, usage: reqUsage }])
   setVoiceState('speaking')
   trackAmplitude()
 
@@ -84,32 +98,49 @@ export default function App() {
   src.start()
 }
 
-const handleAsk = async (question) => {
+  const handleAsk = async (question) => {
+  const usingDemoKey = apiKeyMode === 'default'
+
+  if (usingDemoKey) {
+    const check = canSendRequest(question)
+    if (!check.ok) {
+      console.warn('Blocked:', check.reason)
+      return
+    }
+  }
+
   cancelledRef.current = false
   setMessages((m) => [...m, { role: 'user', text: question }])
   setVoiceState('thinking')
   abortRef.current = new AbortController()
+  const activeKey = apiKeyMode === 'custom' && customApiKey ? customApiKey : undefined
   try {
-    const text = await askGroq(question, abortRef.current.signal)
-    if (cancelledRef.current) return // <- bail if interrupted while Groq was replying
-    await speak(text, stripMarkdownForSpeech(text))
+    const { text, usage: reqUsage } = await askGroq(question, abortRef.current.signal, activeKey)
+    if (usingDemoKey) setUsage(recordUsage(reqUsage))
+    if (usingDemoKey) {
+  addUsage(reqUsage)
+  const {totalCost: newTotal} = getCostBreakdown()
+  setTotalCost(newTotal)
+}
+    if (cancelledRef.current) return
+    await speak(text, stripMarkdownForSpeech(text), reqUsage) // pass usage through to speak()
   } catch (err) {
     if (err.name !== 'AbortError') console.error(err)
     if (!cancelledRef.current) setVoiceState('idle')
   }
 }
 
-const interrupt = () => {
-  cancelledRef.current = true
-  abortRef.current?.abort()
-  if (sourceRef.current) {
-    try { sourceRef.current.stop() } catch {}
-    sourceRef.current = null
+  const interrupt = () => {
+    cancelledRef.current = true
+    abortRef.current?.abort()
+    if (sourceRef.current) {
+      try { sourceRef.current.stop() } catch { }
+      sourceRef.current = null
+    }
+    cancelAnimationFrame(rafRef.current)
+    setAmplitude(0)
+    setVoiceState('idle')
   }
-  cancelAnimationFrame(rafRef.current)
-  setAmplitude(0)
-  setVoiceState('idle')
-}
 
   const startListening = async () => {
     if (!sttReady) return
@@ -160,7 +191,26 @@ const interrupt = () => {
         overflow: 'hidden',
       }}
     >
-      {/* warm pooled glow behind the orb — the "deliberate camera focus" staging */}
+      <LeftPanel
+        voices={voices}
+        selectedVoice={voice}
+        onSelectVoice={setVoice}
+        onOpenSettings={() => setSettingsOpen(true)}
+        inputRate={rates.input}
+        outputRate={rates.output}
+        onSaveRates={(i, o) => { setRates(i, o); setRatesState({ input: i, output: o }) }}
+      />
+      <SettingsOverlay
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        provider={provider}
+        onProviderChange={setProvider}
+        apiKeys={apiKeys}
+        onApiKeyChange={(p, key) => setApiKeys((prev) => ({ ...prev, [p]: key }))}
+        useLocalModel={useLocalModel}
+        onUseLocalModelChange={setUseLocalModel}
+      />
+
       <div
         style={{
           position: 'absolute',
@@ -194,7 +244,7 @@ const interrupt = () => {
       <div style={{ width: 'min(60vw, 60vh, 400px)', height: 'min(60vw, 60vh, 400px)' }}>
         <Canvas camera={{ position: [0, 0, 4], fov: 50 }} dpr={[1, 2]}>
           <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} />
-          <CameraRig/>
+          <CameraRig />
         </Canvas>
       </div>
 
@@ -213,11 +263,25 @@ const interrupt = () => {
             Stop
           </OrbButton>
         )}
-
-        <VoicePicker voice={voice} setVoice={setVoice} voices={voices} />
       </div>
 
       <ConversationPanel messages={messages} />
+      <SettingsOverlay
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        provider={provider}
+        onProviderChange={setProvider}
+        apiKeys={apiKeys}
+        onApiKeyChange={(p, key) => setApiKeys((prev) => ({ ...prev, [p]: key }))}
+        useLocalModel={useLocalModel}
+        onUseLocalModelChange={setUseLocalModel}
+      />
+      {apiKeyMode === 'default' && (
+  <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 20, fontSize: 11, color: '#8A8A8E' }}>
+    {usage.requestsLeft} requests · {usage.tokensLeft.toLocaleString()} tokens left
+  </div>
+)}
+      <Footer />
     </div>
   )
 }
