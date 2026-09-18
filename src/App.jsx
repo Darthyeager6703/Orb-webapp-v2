@@ -12,8 +12,11 @@ import { stripMarkdownForSpeech } from './lib/text'
 import CameraRig from './components/CameraRig'
 import SettingsOverlay from './components/SettingsOverlay'
 import Footer from './components/Footer'
-import { canSendRequest, recordUsage, getUsageSummary } from './lib/usage'
+import { canSendRequest, recordUsage, getUsageSummary, lockUsage, isLocked } from './lib/usage'
 import { setRates, getRates, addUsage, getCostBreakdown } from './lib/costTracker'
+import LimitOverlay from './components/LimitOverlay'
+import UpgradeGate from './components/UpgradeGate'
+
 
 
 export default function App() {
@@ -37,6 +40,10 @@ export default function App() {
   const [rates, setRatesState] = useState(getRates())
   const [totalCost, setTotalCost] = useState(0)
 
+  const [locked, setLocked] = useState(isLocked())
+  const [limitOverlayOpen, setLimitOverlayOpen] = useState(false)
+  const [upgradeStep, setUpgradeStep] = useState(0)
+
   const audioCtxRef = useRef(null)
   const analyserRef = useRef(null)
   const rafRef = useRef(null)
@@ -52,6 +59,10 @@ export default function App() {
     loadKokoro().then((v) => { if (v?.length) setVoices(v); setModelReady(true) })
     loadWhisper().then(() => setSttReady(true))
   }, [])
+
+  useEffect(() => {
+  if (apiKeyMode === 'custom' && customApiKey) setLocked(false)
+}, [apiKeyMode, customApiKey])
 
   const getAudioCtx = () => {
     if (!audioCtxRef.current) {
@@ -72,7 +83,7 @@ export default function App() {
     rafRef.current = requestAnimationFrame(trackAmplitude)
   }
 
-  const speak = async (displayText, spokenText = displayText, reqUsage = null) => {
+  const speak = async (displayText, spokenText = displayText, reqUsage = null, hitLimit = false) => {
   if (!modelReady) return
   const ctx = getAudioCtx()
   const result = await generateSpeech(spokenText, voice)
@@ -94,6 +105,8 @@ export default function App() {
     setAmplitude(0)
     setVoiceState('idle')
     sourceRef.current = null
+    setLocked(hitLimit) // update visual lock state only now
+    if (hitLimit) setLimitOverlayOpen(true) // fires only after the orb finishes speaking
   }
   src.start()
 }
@@ -104,7 +117,10 @@ export default function App() {
   if (usingDemoKey) {
     const check = canSendRequest(question)
     if (!check.ok) {
-      console.warn('Blocked:', check.reason)
+      if (['request_cap', 'token_cap', 'locked'].includes(check.reason)) {
+        setLocked(true)
+        setLimitOverlayOpen(true)
+      }
       return
     }
   }
@@ -115,15 +131,16 @@ export default function App() {
   abortRef.current = new AbortController()
   const activeKey = apiKeyMode === 'custom' && customApiKey ? customApiKey : undefined
   try {
-    const { text, usage: reqUsage } = await askGroq(question, abortRef.current.signal, activeKey)
-    if (usingDemoKey) setUsage(recordUsage(reqUsage))
+    const { text, usage: reqUsage, toolsUsed } = await askGroq(question, abortRef.current.signal, activeKey)
+    let hitLimit = false
     if (usingDemoKey) {
-  addUsage(reqUsage)
-  const {totalCost: newTotal} = getCostBreakdown()
-  setTotalCost(newTotal)
-}
+      const newUsage = recordUsage(reqUsage)
+      setUsage(newUsage)
+      hitLimit = newUsage.requestsLeft <= 0 || newUsage.tokensLeft <= 0
+      if (hitLimit) lockUsage()
+    }
     if (cancelledRef.current) return
-    await speak(text, stripMarkdownForSpeech(text), reqUsage) // pass usage through to speak()
+    await speak(text, stripMarkdownForSpeech(text), reqUsage, hitLimit)
   } catch (err) {
     if (err.name !== 'AbortError') console.error(err)
     if (!cancelledRef.current) setVoiceState('idle')
@@ -143,7 +160,7 @@ export default function App() {
   }
 
   const startListening = async () => {
-    if (!sttReady) return
+    if (!sttReady || locked) return
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     mediaStreamRef.current = stream
     chunksRef.current = []
@@ -241,7 +258,12 @@ export default function App() {
         {statusLabel}
       </div>
 
-      <div style={{ width: 'min(60vw, 60vh, 400px)', height: 'min(60vw, 60vh, 400px)' }}>
+      <div style={
+        { 
+          width: 'min(60vw, 60vh, 400px)', 
+          height: 'min(60vw, 60vh, 400px)',
+          filter: locked ? 'grayscale(1) brightness(1.25)' : 'none',
+          transition: 'filter 0.8s ease', }}>
         <Canvas camera={{ position: [0, 0, 4], fov: 50 }} dpr={[1, 2]}>
           <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} />
           <CameraRig />
@@ -255,7 +277,7 @@ export default function App() {
           disabled={!sttReady || !modelReady}
           active={voiceState === 'listening'}
         >
-          {sttReady && modelReady ? 'Hold to Talk' : 'Loading…'}
+          {locked ? 'Locked' : sttReady && modelReady ? 'Hold to Talk' : 'Loading…'}
         </OrbButton>
 
         {(voiceState === 'thinking' || voiceState === 'speaking') && (
@@ -276,6 +298,16 @@ export default function App() {
         useLocalModel={useLocalModel}
         onUseLocalModelChange={setUseLocalModel}
       />
+      <LimitOverlay
+  open={limitOverlayOpen}
+  onDismiss={() => setLimitOverlayOpen(false)}
+  onUpgrade={() => { setLimitOverlayOpen(false); setUpgradeStep(1) }}
+/>
+<UpgradeGate
+  step={upgradeStep}
+  onYes={() => setUpgradeStep(2)}
+  onOkay={() => setUpgradeStep(0)}
+/>
       {apiKeyMode === 'default' && (
   <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 20, fontSize: 11, color: '#8A8A8E' }}>
     {usage.requestsLeft} requests · {usage.tokensLeft.toLocaleString()} tokens left

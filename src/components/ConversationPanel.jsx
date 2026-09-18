@@ -12,7 +12,7 @@ export default function ConversationPanel({ messages }) {
 
   return (
     <div
-      className='conversational-panel'
+      className='conversation-panel'
       style={{
         position: 'fixed',
         top: 0,
