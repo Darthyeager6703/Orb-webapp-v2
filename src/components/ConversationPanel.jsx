@@ -1,14 +1,12 @@
 import { useEffect, useRef } from 'react'
 import ResponseText from './ResponseText'
 
-export default function ConversationPanel({ messages }) {
+export default function ConversationPanel({ messages, open }) {
   const endRef = useRef(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  if (!messages.length) return null
 
   return (
     <div
@@ -28,6 +26,10 @@ export default function ConversationPanel({ messages }) {
         flexDirection: 'column',
         gap: 18,
         zIndex: 10,
+        transform: open ? 'translateX(0)' : 'translateX(100%)',
+        opacity: open ? 1 : 0,
+        pointerEvents: open ? 'auto' : 'none',
+        transition: 'transform 550ms cubic-bezier(0.22, 1, 0.36, 1), opacity 400ms ease',
       }}
     >
       {messages.map((m, i) => (

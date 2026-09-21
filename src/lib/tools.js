@@ -28,7 +28,6 @@ export async function searchDuckDuckGo(query) {
 export async function geocodeLocation(place) {
   const res = await fetch(
     `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(place)}&format=json&limit=1`,
-    { headers: { 'Accept-Language': 'en' } }
   )
   const data = await res.json()
   const top = data[0]

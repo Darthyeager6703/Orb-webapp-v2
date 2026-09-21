@@ -14,18 +14,6 @@ export const toolSchemas = [
   {
     type: 'function',
     function: {
-      name: 'searchDuckDuckGo',
-      description: 'Search the web for quick facts, definitions, or current general knowledge.',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'The search query' } },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'geocodeLocation',
       description: 'Find coordinates and a map link for a place name (city, address, landmark).',
       parameters: {

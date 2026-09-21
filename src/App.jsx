@@ -4,6 +4,7 @@ import MorphOrb from './components/MorphOrb'
 import LeftPanel from './components/LeftPanel'
 import OrbButton from './components/OrbButton'
 import ConversationPanel from './components/ConversationPanel'
+import CostBreakdown from './components/CostBreakdown'
 import { askGroq } from './lib/groq'
 import { loadKokoro, generateSpeech } from './lib/kokoro'
 import { loadWhisper, transcribe } from './lib/whisper'
@@ -13,11 +14,14 @@ import CameraRig from './components/CameraRig'
 import SettingsOverlay from './components/SettingsOverlay'
 import Footer from './components/Footer'
 import { canSendRequest, recordUsage, getUsageSummary, lockUsage, isLocked } from './lib/usage'
-import { setRates, getRates, addUsage, getCostBreakdown } from './lib/costTracker'
+import { setRates, getRates, addUsage } from './lib/costTracker'
 import LimitOverlay from './components/LimitOverlay'
 import UpgradeGate from './components/UpgradeGate'
+import TextInputBar from './components/TextInputBar'
+import StatusToast from './components/StatusToast'
 
-
+const PANEL_WIDTH_PX = 420
+const SPINE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
 export default function App() {
   const [amplitude, setAmplitude] = useState(0)
@@ -38,11 +42,14 @@ export default function App() {
 
   const [usage, setUsage] = useState(getUsageSummary())
   const [rates, setRatesState] = useState(getRates())
-  const [totalCost, setTotalCost] = useState(0)
+  const [costPanelOpen, setCostPanelOpen] = useState(false)
 
   const [locked, setLocked] = useState(isLocked())
   const [limitOverlayOpen, setLimitOverlayOpen] = useState(false)
   const [upgradeStep, setUpgradeStep] = useState(0)
+
+  const [toastMessage, setToastMessage] = useState('')
+  const [toastVisible, setToastVisible] = useState(false)
 
   const audioCtxRef = useRef(null)
   const analyserRef = useRef(null)
@@ -61,8 +68,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-  if (apiKeyMode === 'custom' && customApiKey) setLocked(false)
-}, [apiKeyMode, customApiKey])
+    if (apiKeyMode === 'custom' && customApiKey) setLocked(false)
+  }, [apiKeyMode, customApiKey])
 
   const getAudioCtx = () => {
     if (!audioCtxRef.current) {
@@ -84,34 +91,41 @@ export default function App() {
   }
 
   const speak = async (displayText, spokenText = displayText, reqUsage = null, hitLimit = false) => {
-  if (!modelReady) return
-  const ctx = getAudioCtx()
-  const result = await generateSpeech(spokenText, voice)
-  if (cancelledRef.current) return
+    if (!modelReady) return
+    const ctx = getAudioCtx()
+    const result = await generateSpeech(spokenText, voice)
+    if (cancelledRef.current) return
 
-  const buffer = ctx.createBuffer(1, result.audio.length, result.sampling_rate)
-  buffer.copyToChannel(result.audio, 0)
-  const src = ctx.createBufferSource()
-  src.buffer = buffer
-  src.connect(analyserRef.current)
-  sourceRef.current = src
+    const buffer = ctx.createBuffer(1, result.audio.length, result.sampling_rate)
+    buffer.copyToChannel(result.audio, 0)
+    const src = ctx.createBufferSource()
+    src.buffer = buffer
+    src.connect(analyserRef.current)
+    sourceRef.current = src
 
-  setMessages((m) => [...m, { role: 'assistant', text: displayText, usage: reqUsage }])
-  setVoiceState('speaking')
-  trackAmplitude()
+    setMessages((m) => [...m, { role: 'assistant', text: displayText, usage: reqUsage }])
+    setVoiceState('speaking')
+    trackAmplitude()
 
-  src.onended = () => {
-    cancelAnimationFrame(rafRef.current)
-    setAmplitude(0)
-    setVoiceState('idle')
-    sourceRef.current = null
-    setLocked(hitLimit) // update visual lock state only now
-    if (hitLimit) setLimitOverlayOpen(true) // fires only after the orb finishes speaking
+    src.onended = () => {
+      cancelAnimationFrame(rafRef.current)
+      setAmplitude(0)
+      setVoiceState('idle')
+      sourceRef.current = null
+      setLocked(hitLimit)
+      if (hitLimit) setLimitOverlayOpen(true)
+    }
+    src.start()
   }
-  src.start()
+
+  const showToast = (msg, duration = 3000) => {
+  setToastMessage(msg)
+  setToastVisible(true)
+  setTimeout(() => setToastVisible(false), duration)
 }
 
-  const handleAsk = async (question) => {
+  const handleAsk = async (question, isRetry = false, retryCount = 0) => {
+  const MAX_RETRIES = 2
   const usingDemoKey = apiKeyMode === 'default'
 
   if (usingDemoKey) {
@@ -126,12 +140,16 @@ export default function App() {
   }
 
   cancelledRef.current = false
-  setMessages((m) => [...m, { role: 'user', text: question }])
+  if (!isRetry) setMessages((m) => [...m, { role: 'user', text: question }])
   setVoiceState('thinking')
   abortRef.current = new AbortController()
   const activeKey = apiKeyMode === 'custom' && customApiKey ? customApiKey : undefined
+
   try {
     const { text, usage: reqUsage, toolsUsed } = await askGroq(question, abortRef.current.signal, activeKey)
+
+    addUsage(reqUsage)
+
     let hitLimit = false
     if (usingDemoKey) {
       const newUsage = recordUsage(reqUsage)
@@ -142,6 +160,16 @@ export default function App() {
     if (cancelledRef.current) return
     await speak(text, stripMarkdownForSpeech(text), reqUsage, hitLimit)
   } catch (err) {
+    if (err.message === 'RATE_LIMITED') {
+      if (retryCount >= MAX_RETRIES) {
+        showToast("Groq's overloaded right now — try again in a bit.", 4000)
+        setVoiceState('idle')
+        return
+      }
+      showToast(`Groq's a little busy — retrying in ${Math.ceil(err.waitMs / 1000)}s`, err.waitMs + 1000)
+      setTimeout(() => handleAsk(question, true, retryCount + 1), err.waitMs)
+      return
+    }
     if (err.name !== 'AbortError') console.error(err)
     if (!cancelledRef.current) setVoiceState('idle')
   }
@@ -194,6 +222,7 @@ export default function App() {
   const split = voiceState === 'thinking' || voiceState === 'speaking' ? 1 : 0
 
   const statusLabel = { idle: '', listening: 'Listening…', thinking: 'Thinking…', speaking: 'Speaking…' }[voiceState]
+  const panelOpen = messages.length > 0
 
   return (
     <div
@@ -201,9 +230,6 @@ export default function App() {
         width: '100vw',
         height: '100vh',
         background: 'radial-gradient(ellipse at center, #141416 0%, #0A0A0B 55%, #050506 100%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -217,6 +243,7 @@ export default function App() {
         outputRate={rates.output}
         onSaveRates={(i, o) => { setRates(i, o); setRatesState({ input: i, output: o }) }}
       />
+
       <SettingsOverlay
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -227,92 +254,136 @@ export default function App() {
         useLocalModel={useLocalModel}
         onUseLocalModelChange={setUseLocalModel}
       />
+      <StatusToast message={toastMessage} visible={toastVisible} />
 
+      {/* THE STAGE — a real box with real width. Shrinks from 100% to (100% - panel width)
+          when the panel opens. Everything inside it centers relative to ITS OWN bounds,
+          not the viewport — so as it narrows, the center point moves correctly, for real,
+          not via a browser-behavior guess. */}
       <div
         style={{
-          position: 'absolute',
-          width: 560,
-          height: 560,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(201,162,75,0.09), transparent 70%)',
-          filter: 'blur(50px)',
-          pointerEvents: 'none',
-        }}
-      />
-
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '18%',
-          textAlign: 'center',
-          color: '#8A8A8E',
-          fontFamily: '"Neue Montreal", "Söhne", sans-serif',
-          fontWeight: 300,
-          fontSize: 13,
-          letterSpacing: '0.15em',
-          textTransform: 'uppercase',
-          opacity: statusLabel ? 1 : 0,
-          transition: 'opacity 500ms ease',
+          position: 'relative',
+          height: '100%',
+          width: panelOpen ? `calc(100% - ${PANEL_WIDTH_PX}px)` : '100%',
+          transition: `width 550ms ${SPINE_EASE}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
         }}
       >
-        {statusLabel}
-      </div>
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 560,
+            height: 560,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(201,162,75,0.09), transparent 70%)',
+            filter: 'blur(50px)',
+            pointerEvents: 'none',
+          }}
+        />
 
-      <div style={
-        { 
-          width: 'min(60vw, 60vh, 400px)', 
-          height: 'min(60vw, 60vh, 400px)',
-          filter: locked ? 'grayscale(1) brightness(1.25)' : 'none',
-          transition: 'filter 0.8s ease', }}>
-        <Canvas camera={{ position: [0, 0, 4], fov: 50 }} dpr={[1, 2]}>
-          <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} />
-          <CameraRig />
-        </Canvas>
-      </div>
-
-      <div style={{ position: 'absolute', bottom: 40, display: 'flex', gap: 12, alignItems: 'center', zIndex: 5 }}>
-        <OrbButton
-          onMouseDown={startListening}
-          onMouseUp={stopListening}
-          disabled={!sttReady || !modelReady}
-          active={voiceState === 'listening'}
+        {/* orb — the only plain-flow child inside the stage, so flex centers exactly this
+            within the stage's own (shrinking) box */}
+        <div
+          style={{
+            width: 'min(60vw, 60vh, 400px)',
+            height: 'min(60vw, 60vh, 400px)',
+            filter: locked ? 'grayscale(1) brightness(1.25)' : 'none',
+            transition: 'filter 0.8s ease',
+          }}
         >
-          {locked ? 'Locked' : sttReady && modelReady ? 'Hold to Talk' : 'Loading…'}
-        </OrbButton>
+          <Canvas camera={{ position: [0, 0, 4], fov: 50 }} dpr={[1, 2]}>
+            <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} />
+            <CameraRig />
+          </Canvas>
+        </div>
 
-        {(voiceState === 'thinking' || voiceState === 'speaking') && (
-          <OrbButton onClick={interrupt} variant="danger">
-            Stop
-          </OrbButton>
-        )}
+        {/* status + controls anchored to the STAGE's own center line (left: 50% of the stage,
+            not the viewport) — this is what actually fixes the overlap: their center point
+            is mathematically tied to the stage's width, so it moves in lockstep with the orb */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '26%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            textAlign: 'center',
+            color: '#8A8A8E',
+            fontFamily: '"Neue Montreal", "Söhne", sans-serif',
+            fontWeight: 300,
+            fontSize: 13,
+            letterSpacing: '0.15em',
+            textTransform: 'uppercase',
+            opacity: statusLabel ? 1 : 0,
+            transition: 'opacity 500ms ease',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {statusLabel}
+        </div>
+
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 40,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14,
+            alignItems: 'center',
+            zIndex: 5,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <OrbButton
+              onMouseDown={startListening}
+              onMouseUp={stopListening}
+              disabled={!sttReady || !modelReady}
+              active={voiceState === 'listening'}
+            >
+              {sttReady && modelReady ? 'Hold to Talk' : 'Loading…'}
+            </OrbButton>
+
+            {(voiceState === 'thinking' || voiceState === 'speaking') && (
+              <OrbButton onClick={interrupt} variant="danger">
+                Stop
+              </OrbButton>
+            )}
+          </div>
+
+          <TextInputBar onSend={handleAsk} disabled={voiceState === 'thinking' || voiceState === 'speaking'} />
+        </div>
       </div>
 
-      <ConversationPanel messages={messages} />
-      <SettingsOverlay
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        provider={provider}
-        onProviderChange={setProvider}
-        apiKeys={apiKeys}
-        onApiKeyChange={(p, key) => setApiKeys((prev) => ({ ...prev, [p]: key }))}
-        useLocalModel={useLocalModel}
-        onUseLocalModelChange={setUseLocalModel}
-      />
+      <ConversationPanel messages={messages} open={panelOpen} />
+
       <LimitOverlay
-  open={limitOverlayOpen}
-  onDismiss={() => setLimitOverlayOpen(false)}
-  onUpgrade={() => { setLimitOverlayOpen(false); setUpgradeStep(1) }}
-/>
-<UpgradeGate
-  step={upgradeStep}
-  onYes={() => setUpgradeStep(2)}
-  onOkay={() => setUpgradeStep(0)}
-/>
+        open={limitOverlayOpen}
+        onDismiss={() => setLimitOverlayOpen(false)}
+        onUpgrade={() => { setLimitOverlayOpen(false); setUpgradeStep(1) }}
+      />
+      <UpgradeGate
+        step={upgradeStep}
+        onYes={() => setUpgradeStep(2)}
+        onOkay={() => setUpgradeStep(0)}
+      />
+
       {apiKeyMode === 'default' && (
-  <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 20, fontSize: 11, color: '#8A8A8E' }}>
-    {usage.requestsLeft} requests · {usage.tokensLeft.toLocaleString()} tokens left
-  </div>
-)}
+        <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          <div
+            onClick={() => setCostPanelOpen((v) => !v)}
+            style={{ fontSize: 11, color: '#8A8A8E', cursor: 'pointer' }}
+          >
+            {usage.requestsLeft} requests · {usage.tokensLeft.toLocaleString()} tokens left
+          </div>
+          {costPanelOpen && <CostBreakdown />}
+        </div>
+      )}
       <Footer />
     </div>
   )
