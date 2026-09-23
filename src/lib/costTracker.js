@@ -1,9 +1,13 @@
+import { loadState, saveState } from './storage'
+
+const saved = loadState()
 let rates = { input: 0, output: 0 } // per 1M tokens, user-set
 let totalInputTokens = 0
 let totalOutputTokens = 0
 
 export function setRates(input, output) {
   rates = { input, output }
+  saveState({ rates })
 }
 
 export function getRates() {
@@ -28,5 +32,6 @@ export function getCostBreakdown() {
   console.log('COST CALC — rates:', rates, 'tokens:', totalInputTokens, totalOutputTokens)
   const inputCost = (totalInputTokens / 1_000_000) * rates.input
   const outputCost = (totalOutputTokens / 1_000_000) * rates.output
+  saveState({ totalInputTokens, totalOutputTokens })
   return { inputCost, outputCost, totalCost: inputCost + outputCost }
 }

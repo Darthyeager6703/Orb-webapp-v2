@@ -26,7 +26,7 @@ export default function UpgradeGate({ step, onYes, onOkay }) {
         )}
         {step === 2 && (
           <>
-            <div>Well, too bad. I ain't corpo choom. Enter your own key and use it infinitely.</div>
+            <div>Well, too bad. Demo over . Enter your own key and use it infinitely.</div>
             <button style={btn} onClick={onOkay}>Okay</button>
           </>
         )}

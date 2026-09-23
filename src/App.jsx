@@ -6,7 +6,7 @@ import OrbButton from './components/OrbButton'
 import ConversationPanel from './components/ConversationPanel'
 import CostBreakdown from './components/CostBreakdown'
 import { askGroq } from './lib/groq'
-import { loadKokoro, generateSpeech } from './lib/kokoro'
+import { loadKokoro, generateSpeech, splitIntoSentences } from './lib/kokoro'
 import { loadWhisper, transcribe } from './lib/whisper'
 import { blobToWhisperInput } from './lib/audio'
 import { stripMarkdownForSpeech } from './lib/text'
@@ -19,11 +19,17 @@ import LimitOverlay from './components/LimitOverlay'
 import UpgradeGate from './components/UpgradeGate'
 import TextInputBar from './components/TextInputBar'
 import StatusToast from './components/StatusToast'
+import { checkWebGPUSupport, getGpuTier } from './lib/capabilities'
+import { hasSeenDisclosure, markDisclosureSeen } from './lib/storage'
+import DisclosureGate from './components/DisclosureGate'
 
 const PANEL_WIDTH_PX = 420
 const SPINE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
 export default function App() {
+
+  const [disclosureSeen, setDisclosureSeen] = useState(hasSeenDisclosure())
+
   const [amplitude, setAmplitude] = useState(0)
   const [voiceState, setVoiceState] = useState('idle')
   const [voice, setVoice] = useState('af_bella')
@@ -48,6 +54,11 @@ export default function App() {
   const [limitOverlayOpen, setLimitOverlayOpen] = useState(false)
   const [upgradeStep, setUpgradeStep] = useState(0)
 
+  const [gpuSupport, setGpuSupport] = useState(null)
+  const [gpuTier, setGpuTier] = useState('unknown')
+  const [generating, setGenerating] = useState(false)
+
+
   const [toastMessage, setToastMessage] = useState('')
   const [toastVisible, setToastVisible] = useState(false)
 
@@ -63,6 +74,19 @@ export default function App() {
   const cancelledRef = useRef(false)
 
   useEffect(() => {
+  getGpuTier().then((tier) => {
+    console.log('GPU tier detected:', tier)
+    setGpuTier(tier)
+  })
+}, [])
+
+  useEffect(() => {
+  if (!disclosureSeen) return // don't start loading models until dismissed
+  loadKokoro().then((v) => { if (v?.length) setVoices(v); setModelReady(true) })
+  loadWhisper().then(() => setSttReady(true))
+}, [disclosureSeen])
+
+  useEffect(() => {
     loadKokoro().then((v) => { if (v?.length) setVoices(v); setModelReady(true) })
     loadWhisper().then(() => setSttReady(true))
   }, [])
@@ -70,6 +94,10 @@ export default function App() {
   useEffect(() => {
     if (apiKeyMode === 'custom' && customApiKey) setLocked(false)
   }, [apiKeyMode, customApiKey])
+
+  useEffect(() => {
+  checkWebGPUSupport().then((result) => setGpuSupport(result.supported))
+}, [])
 
   const getAudioCtx = () => {
     if (!audioCtxRef.current) {
@@ -91,34 +119,92 @@ export default function App() {
   }
 
   const speak = async (displayText, spokenText = displayText, reqUsage = null, hitLimit = false) => {
-    if (!modelReady) return
-    const ctx = getAudioCtx()
-    const result = await generateSpeech(spokenText, voice)
-    if (cancelledRef.current) return
+  if (!modelReady) return
+  const ctx = getAudioCtx()
 
+  setMessages((m) => [...m, { role: 'assistant', text: displayText, usage: reqUsage }])
+  setVoiceState('speaking')
+  setGenerating(true)
+
+  const sentences = splitIntoSentences(spokenText)
+  if (sentences.length === 0) {
+    setVoiceState('idle')
+    return
+  }
+
+  // pre-generate the first chunk before anything plays
+  let nextChunkPromise = generateSpeech(sentences[0], voice)
+  let chunkIndex = 0
+
+  const playChunk = async () => {
+  if (cancelledRef.current || chunkIndex >= sentences.length) {
+    cancelAnimationFrame(rafRef.current)
+    setAmplitude(0)
+    setVoiceState('idle')
+    sourceRef.current = null
+    setLocked(hitLimit)
+    if (hitLimit) setLimitOverlayOpen(true)
+    setGenerating(false)
+    return
+  }
+
+  const genStart = performance.now()
+
+  const startNextPrefetch = () => {
+    const upcoming = chunkIndex + 1
+    if (upcoming < sentences.length) {
+      const nextGenStart = performance.now()
+      nextChunkPromise = generateSpeech(sentences[upcoming], voice).then((r) => {
+        console.log(`Chunk ${upcoming} generated in ${(performance.now() - nextGenStart).toFixed(0)}ms`)
+        return r
+      })
+    }
+  }
+
+  const playBuffer = (result) => {
     const buffer = ctx.createBuffer(1, result.audio.length, result.sampling_rate)
+    const playbackDuration = (result.audio.length / result.sampling_rate) * 1000
+    console.log(`Chunk ${chunkIndex} plays for ${playbackDuration.toFixed(0)}ms`)
+
     buffer.copyToChannel(result.audio, 0)
     const src = ctx.createBufferSource()
     src.buffer = buffer
     src.connect(analyserRef.current)
     sourceRef.current = src
 
-    setMessages((m) => [...m, { role: 'assistant', text: displayText, usage: reqUsage }])
-    setVoiceState('speaking')
-    trackAmplitude()
-
-    src.onended = () => {
-      cancelAnimationFrame(rafRef.current)
-      setAmplitude(0)
-      setVoiceState('idle')
-      sourceRef.current = null
-      setLocked(hitLimit)
-      if (hitLimit) setLimitOverlayOpen(true)
-    }
+    chunkIndex++
+    src.onended = () => playChunk()
     src.start()
+    trackAmplitude()
   }
 
-  const showToast = (msg, duration = 3000) => {
+  try {
+    const result = await nextChunkPromise
+    console.log(`Chunk ${chunkIndex} was ready after waiting ${(performance.now() - genStart).toFixed(0)}ms`)
+    if (cancelledRef.current) return
+
+    startNextPrefetch()
+    playBuffer(result)
+  } catch (err) {
+    if (err.message?.includes('Device') || err.message?.includes('lost')) {
+      forceWasmMode()
+      showToast('Graphics hiccup - switching to a lighter CPU mode', 3000, 'error')
+
+      const retryResult = await generateSpeech(sentences[chunkIndex], voice)
+      if (cancelledRef.current) return
+
+      startNextPrefetch()
+      playBuffer(retryResult)
+    } else {
+      throw err
+    }
+  }
+}
+
+  await playChunk()
+}
+
+  const showToast = (msg, duration = 3000, variant = 'default') => {
   setToastMessage(msg)
   setToastVisible(true)
   setTimeout(() => setToastVisible(false), duration)
@@ -224,6 +310,32 @@ export default function App() {
   const statusLabel = { idle: '', listening: 'Listening…', thinking: 'Thinking…', speaking: 'Speaking…' }[voiceState]
   const panelOpen = messages.length > 0
 
+  if (gpuSupport === false) {
+  return (
+    <div style={{
+      width: '100vw', height: '100vh', background: '#0A0A0B',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: '#F5F3EE', fontFamily: "'Inter', sans-serif", textAlign: 'center', padding: 40,
+    }}>
+      <div style={{ maxWidth: 400 }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontSize: 20, color: '#E8CE8C', marginBottom: 12 }}>
+          This works best in Chrome or Edge on desktop.
+        </div>
+        <div style={{ color: '#8A8A8E', fontSize: 13, lineHeight: 1.6 }}>
+          The orb runs real AI models directly in your browser, which needs WebGPU support — not available here yet.
+        </div>
+      </div>
+    </div>
+  )
+}
+if (gpuSupport === null) return null // brief blank while checking, or a simple loading state
+
+if (!disclosureSeen) {
+  return (
+    <DisclosureGate onDismiss={() => { markDisclosureSeen(); setDisclosureSeen(true) }} />
+  )
+}
+
   return (
     <div
       style={{
@@ -297,7 +409,7 @@ export default function App() {
           }}
         >
           <Canvas camera={{ position: [0, 0, 4], fov: 50 }} dpr={[1, 2]}>
-            <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} />
+            <MorphOrb deform={deform} split={split} mode={voiceState} radius={0.6} throttled={gpuTier === 'integrated' && generating} />
             <CameraRig />
           </Canvas>
         </div>

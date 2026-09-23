@@ -2,11 +2,11 @@ export const toolSchemas = [
   {
     type: 'function',
     function: {
-      name: 'searchWikipedia',
-      description: 'Search Wikipedia for factual/encyclopedic information on a topic.',
+      name: 'webSearch',
+      description: 'Search the web for any information — current events, facts, prices, people, places, how-to questions, anything. Use this proactively whenever a question could benefit from real, current information rather than relying on memory.',
       parameters: {
         type: 'object',
-        properties: { query: { type: 'string', description: 'The search query' } },
+        properties: { query: { type: 'string', description: 'What to search for' } },
         required: ['query'],
       },
     },

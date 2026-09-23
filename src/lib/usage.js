@@ -1,12 +1,19 @@
-const MAX_REQUESTS = 10
+import {loadState, saveState} from './storage'
+
+const MAX_REQUESTS = 1
 const MAX_TOTAL_TOKENS = 20000
 const MAX_INPUT_CHARS = 4000
 
-let state = { requestCount: 0, totalTokens: 0, history: [] }
-let locked = false
+const saved = loadState()
+let state = saved.usage || { requestCount: 0, totalTokens: 0, history: [] }
+let locked = saved.locked || false
+
+function persist() {
+  saveState({ usage: state, locked })
+}
 
 export function isLocked() { return locked }
-export function lockUsage() { locked = true }
+export function lockUsage() { locked = true; persist() }
 
 export function canSendRequest(inputText) {
   if (locked) return { ok: false, reason: 'locked' }
@@ -20,6 +27,7 @@ export function recordUsage(usage) {
   state.requestCount += 1
   state.totalTokens += usage.total_tokens
   state.history.push(usage)
+  persist();
   return getUsageSummary()
 }
 
