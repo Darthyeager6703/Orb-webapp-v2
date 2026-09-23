@@ -1,6 +1,6 @@
 import {loadState, saveState} from './storage'
 
-const MAX_REQUESTS = 1
+const MAX_REQUESTS = 10
 const MAX_TOTAL_TOKENS = 20000
 const MAX_INPUT_CHARS = 4000
 
