@@ -9,7 +9,7 @@ export default function Footer() {
       letterSpacing: '0.05em', zIndex: 5,
     }}>
       <span>Made with intent</span>
-      <a href="https://github.com/yourusername/yourrepo" target="_blank" rel="noreferrer" style={{ display: 'flex' }}>
+      <a href="https://github.com/Darthyeager6703/Orb-webapp-v2" target="_blank" rel="noreferrer" style={{ display: 'flex' }}>
         <GithubLogoIcon size={16} weight="duotone" color="#C9A24B" />
       </a>
     </div>
